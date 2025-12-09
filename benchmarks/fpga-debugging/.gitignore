@@ -1,3 +1,4 @@
 *.btor
 dump.vcd
 a.out
+.DS_Store
