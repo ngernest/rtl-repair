@@ -198,27 +198,27 @@ always @(posedge clk) begin
 end
 */
 
-// Write logic
+// Write logic - PUSH transaction control
 always @* begin
-    write = 1'b0;
+    write = 1'b0;  // Default: IDLE (no push)
 
     drop_frame_next = drop_frame_reg;
     overflow_next = 1'b0;
     bad_frame_next = 1'b0;
     good_frame_next = 1'b0;
 
-    wr_ptr_next = wr_ptr_reg;
-    wr_ptr_cur_next = wr_ptr_cur_reg;
+    wr_ptr_next = wr_ptr_reg;           // Default: IDLE (pointers unchanged)
+    wr_ptr_cur_next = wr_ptr_cur_reg;   // Default: IDLE (pointers unchanged)
 
     if (s_axis_tready && s_axis_tvalid) begin
-        // transfer in
+        // AXI handshake succeeded - transaction requested
         if (!FRAME_FIFO) begin
-            // normal FIFO mode
+            // PUSH: normal FIFO mode - unconditional write
             write = 1'b1;
             wr_ptr_next = wr_ptr_reg + 1;
         end else if (full_cur || full_wr || drop_frame_reg) begin
-            // full, packet overflow, or currently dropping frame
-            // drop frame
+            // IDLE (drop): full, packet overflow, or currently dropping frame
+            // drop frame - no write to memory
             drop_frame_next = 1'b1;
             if (s_axis_tlast) begin
                 // end of frame, reset write pointer
@@ -227,6 +227,7 @@ always @* begin
                 overflow_next = 1'b1;
             end
         end else begin
+            // PUSH: frame FIFO mode - write to memory
             write = 1'b1;
             wr_ptr_cur_next = wr_ptr_cur_reg + 1;
             if (s_axis_tlast) begin
@@ -237,17 +238,19 @@ always @* begin
                     wr_ptr_cur_next = wr_ptr_reg;
                     bad_frame_next = 1'b1;
                 end else begin
-                    // good packet, update write pointer
+                    // PUSH complete: good packet, commit write pointer
                     wr_ptr_next = wr_ptr_cur_reg + 1;
                     good_frame_next = 1'b1;
                 end
             end
         end
     end
+    // else: IDLE - no handshake, no write
 end
 
 always @(posedge clk) begin
     if (rst) begin
+        // RESET: Initialize write-side registers
         wr_ptr_reg <= {ADDR_WIDTH+1{1'b0}};
         wr_ptr_cur_reg <= {ADDR_WIDTH+1{1'b0}};
 
@@ -256,6 +259,7 @@ always @(posedge clk) begin
         bad_frame_reg <= 1'b0;
         good_frame_reg <= 1'b0;
     end else begin
+        // Update write state (PUSH or IDLE)
         wr_ptr_reg <= wr_ptr_next;
         wr_ptr_cur_reg <= wr_ptr_cur_next;
 
@@ -272,37 +276,42 @@ always @(posedge clk) begin
     end
 
     if (write) begin
+        // PUSH: Write data to memory
         mem[wr_addr_reg[ADDR_WIDTH-1:0]] <= s_axis;
     end
+    // else: IDLE - no memory write
 end
 
-// Read logic
+// Read logic - POP transaction control
 always @* begin
-    read = 1'b0;
+    read = 1'b0;  // Default: IDLE (no pop)
 
-    rd_ptr_next = rd_ptr_reg;
+    rd_ptr_next = rd_ptr_reg;  // Default: IDLE (pointer unchanged)
 
     mem_read_data_valid_next = mem_read_data_valid_reg;
 
     if (store_output || !mem_read_data_valid_reg) begin
         // output data not valid OR currently being transferred
         if (!empty) begin
-            // not empty, perform read
+            // POP: not empty, perform read from memory
             read = 1'b1;
             mem_read_data_valid_next = 1'b1;
             rd_ptr_next = rd_ptr_reg + 1;
         end else begin
-            // empty, invalidate
+            // IDLE: empty FIFO, invalidate read data
             mem_read_data_valid_next = 1'b0;
         end
     end
+    // else: IDLE - output stage has valid data and not being consumed
 end
 
 always @(posedge clk) begin
     if (rst) begin
+        // RESET: Initialize read-side registers
         rd_ptr_reg <= {ADDR_WIDTH+1{1'b0}};
         mem_read_data_valid_reg <= 1'b0;
     end else begin
+        // Update read state (POP or IDLE)
         rd_ptr_reg <= rd_ptr_next;
         mem_read_data_valid_reg <= mem_read_data_valid_next;
     end
@@ -310,32 +319,40 @@ always @(posedge clk) begin
     rd_addr_reg <= rd_ptr_next;
 
     if (read) begin
+        // POP: Read data from memory to intermediate register
         mem_read_data_reg <= mem[rd_addr_reg[ADDR_WIDTH-1:0]];
     end
+    // else: IDLE - no memory read
 end
 
-// Output register
+// Output register - POP completion stage
 always @* begin
-    store_output = 1'b0;
+    store_output = 1'b0;  // Default: IDLE (no output update)
 
     m_axis_tvalid_next = m_axis_tvalid_reg;
 
     if (m_axis_tready || !m_axis_tvalid) begin
+        // POP complete: downstream ready or no valid data, update output
         store_output = 1'b1;
         m_axis_tvalid_next = mem_read_data_valid_reg;
     end
+    // else: IDLE - output blocked by downstream not ready
 end
 
 always @(posedge clk) begin
     if (rst) begin
+        // RESET: Initialize output-side registers
         m_axis_tvalid_reg <= 1'b0;
     end else begin
+        // Update output valid (POP or IDLE)
         m_axis_tvalid_reg <= m_axis_tvalid_next;
     end
 
     if (store_output) begin
+        // POP complete: Transfer data to output register
         m_axis_reg <= mem_read_data_reg;
     end
+    // else: IDLE - output register unchanged
 end
 
 endmodule
